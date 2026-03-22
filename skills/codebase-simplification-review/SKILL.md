@@ -20,26 +20,33 @@ Default to a review mindset:
 - Findings first, ordered by impact
 - Focus on simplification opportunities, not style nits
 - For each finding, include:
-- what is unnecessarily complex
-- why it exists today
-- the simpler shape to move toward
-- likely migration cost and risk
-- concrete file references
+  - what is unnecessarily complex
+  - why it exists today
+  - the simpler shape to move toward
+  - likely migration cost and risk
+  - concrete file references
 
 If the user asks for implementation after the review, turn the highest-value items into an execution plan or patch set.
 
 ## Workflow
 
 1. Map the codebase shape first.
+
 - Use `rg --files` and a few targeted file reads to understand top-level modules, entrypoints, config, and major subsystems.
 - Look for repeated patterns, parallel pathways, and places where state or responsibilities are split awkwardly.
+
 2. Sample representative hotspots instead of reading everything linearly.
+
 - Prefer entrypoints, registries, builders, context assembly, tool layers, API boundaries, state machines, serializers, and high-churn tests.
 - Follow duplication trails with `rg`, especially repeated phrases, repeated schemas, repeated conversion logic, and repeated lifecycle code.
+
 3. Evaluate simplification at two scales.
+
 - Local: smaller refactors inside functions, classes, and files.
 - Structural: fewer concepts, fewer pathways, fewer special cases, smaller API surface.
+
 4. Produce a prioritized simplification report.
+
 - Separate quick wins from architectural simplifications.
 - Call out deletions explicitly when code appears to be a gadget, compatibility shim, or dead extension point.
 
@@ -48,67 +55,68 @@ If the user asks for implementation after the review, turn the highest-value ite
 ### Small-Scale Simplifications
 
 - Prefer simpler code inside functions:
-- fewer branches
-- fewer temporary variables
-- less state mutation
-- earlier returns instead of nested conditionals
-- direct data flow instead of hand-rolled plumbing
-- omit single-use variables where that makes the code easier to read
+  - fewer branches
+  - fewer temporary variables
+  - less state mutation
+  - earlier returns instead of nested conditionals
+  - direct data flow instead of hand-rolled plumbing
+  - omit single-use variables where that makes the code easier to read
 - Eliminate small stub functions when they only rename another call, forward one line, or hide no meaningful policy.
 - Extract functionality into objects when it improves encapsulation:
-- state and behavior currently passed around together
-- repeated bundles of parameters
-- lifecycle logic spread across multiple call sites
-- invariants enforced informally rather than structurally
+  - state and behavior currently passed around together
+  - repeated bundles of parameters
+  - lifecycle logic spread across multiple call sites
+  - invariants enforced informally rather than structurally
 - Collapse duplicate parsing, normalization, validation, or formatting code into one path.
 - Replace boolean or sentinel-heavy control flow with clearer objects, enums, or distinct code paths when that reduces branching.
 - Remove one-off helpers that exist only to preserve an old layering choice.
 - Prefer `assert` for internal invariants and impossible states when failure indicates a programmer error, instead of open-coded `if`/`then` guard branches.
 - Prefer exception-driven error handling over returning ad hoc error objects or error strings through normal result paths when the call site is already operating in a failure-capable control flow.
 - Prefer structured return types when the result shape is likely to grow:
-- objects or dataclasses over tuples with positional meaning
-- typed records over loosely shaped dicts
-- explicit result containers over stringly encoded multi-purpose payloads
+  - objects or dataclasses over tuples with positional meaning
+  - typed records over loosely shaped dicts
+  - explicit result containers over stringly encoded multi-purpose payloads
 - Prefer structured domain objects over loose dicts when data crosses boundaries or accumulates behavior:
-- parsers and validators at the edge
-- typed meaning in the middle
-- encoding/serialization only at the edge
+  - parsers and validators at the edge
+  - typed meaning in the middle
+  - encoding/serialization only at the edge
 - Preserve type safety when it carries real meaning:
-- keep separate types when they prevent invalid states or encode distinct invariants
-- prefer discriminated unions or specific classes over omnibus records when fields are not actually valid for every case
-- only merge types when the distinctions are cosmetic, redundant, or otherwise purely decorative
+  - keep separate types when they prevent invalid states or encode distinct invariants
+  - prefer discriminated unions or specific classes over omnibus records when fields are not actually valid for every case
+  - only merge types when the distinctions are cosmetic, redundant, or otherwise purely decorative
 - Prefer "transform before erasure":
-- do cleanup, filtering, truncation, and policy decisions before flattening typed state into transport or debug payloads
-- keep one canonical structured representation for as long as possible
-- derive multiple output views from that representation instead of layering ad hoc post-processing on already-rendered data
+  - do cleanup, filtering, truncation, and policy decisions before flattening typed state into transport or debug payloads
+  - keep one canonical structured representation for as long as possible
+  - derive multiple output views from that representation instead of layering ad hoc post-processing on already-rendered data
 
 ### Larger Simplifications
 
 - Simplify API design:
-- reduce argument count
-- reduce optional knobs
-- reduce overlapping entrypoints
-- reduce separate "current chat" vs "explicit destination" pathways when one model can cover both cleanly
+  - reduce argument count
+  - reduce optional knobs
+  - reduce overlapping entrypoints
+  - reduce separate "current chat" vs "explicit destination" pathways when one model can cover both cleanly
 - Generalize repeated special cases into a single mechanism when the abstraction is real.
 - Good example shape: moving several ad hoc inline behaviors into one inner-tag dispatch path.
 - Look for gadgets:
-- code paths that support a feature or future that is no longer intended
-- compatibility layers nobody relies on
-- extension points with no concrete users
-- caches, planners, wrappers, or managers that add indirection without paying rent
+  - code paths that support a feature or future that is no longer intended
+  - compatibility layers nobody relies on
+  - extension points with no concrete users
+  - caches, planners, wrappers, or managers that add indirection without paying rent
 - Consolidate parallel representations:
-- the same concept stored in multiple shapes
-- dual APIs for the same action
-- separate metadata and runtime paths that could be unified
+  - the same concept stored in multiple shapes
+  - dual APIs for the same action
+  - separate metadata and runtime paths that could be unified
 - Narrow ownership boundaries:
-- too many layers touching the same state
-- builder plus registry plus loop plus helper all partially own one behavior
+  - too many layers touching the same state
+  - builder plus registry plus loop plus helper all partially own one behavior
 - Remove speculative abstractions:
-- plugin systems, strategy hooks, config knobs, generic wrappers, or adapters created for flexibility that the product does not actually need
+  - plugin systems, strategy hooks, config knobs, generic wrappers, or adapters created for flexibility that the product does not actually need
 - Prefer deletion over frameworking:
-- if two code paths exist but one is clearly preferred, ask whether the other should be removed rather than abstracted
+  - if two code paths exist but one is clearly preferred, ask whether the other should be removed rather than abstracted
 - Prefer standard library or direct data structures over custom mini-frameworks when custom code adds maintenance without leverage.
 - When the product is prerelease or headed for a major revision, explicitly look for places where backwards compatibility is the main reason complexity still exists.
+  - if not clear, ask the user whether the complexity is justified by a real need to preserve old formats or pathways
 
 ## Review Questions
 
@@ -164,4 +172,3 @@ Use or adapt this when the user wants a broad simplification audit:
 > - why it is safe or worthwhile
 > - file references
 > - migration risk
-
