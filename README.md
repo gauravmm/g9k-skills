@@ -2,7 +2,10 @@
 
 Small, focused agent skills published in the standard `skills/<slug>/SKILL.md` format for use with the Skills ecosystem.
 
-This repository currently includes `codebase-simplification-review`, a skill for doing whole-codebase simplification reviews that prioritize deleting complexity, collapsing duplicate paths, and identifying unnecessary abstractions.
+This repository currently includes:
+
+- `codebase-simplification-review`, a skill for doing whole-codebase simplification reviews that prioritize deleting complexity, collapsing duplicate paths, and identifying unnecessary abstractions.
+- `understand-unfamiliar-json`, a skill for inspecting unknown JSON with `jqi` before writing `jq` filters, parsers, or transformations.
 
 ## Install
 
@@ -12,10 +15,11 @@ Install the whole repository:
 npx skills add gauravmm/g9k-skills
 ```
 
-Install the specific skill in this repo:
+Install a specific skill in this repo:
 
 ```bash
 npx skills add gauravmm/g9k-skills --skill codebase-simplification-review
+npx skills add gauravmm/g9k-skills --skill understand-unfamiliar-json
 ```
 
 ## More specific skills
