@@ -26,6 +26,8 @@ Default to a review mindset:
   - likely migration cost and risk
   - concrete file references
 
+After the main findings, add a short **Also noted** section for observations that did not make the main list. For each, give one sentence on what was seen and one sentence on why it was excluded (e.g. "fix requires coordinating two packages," "performance concern rather than structural complexity," "near-duplicate but collapsing adds indirection"). This section prevents silent omission: if something was noticed, it should appear somewhere in the report so the user can decide whether to act on it.
+
 If the user asks for implementation after the review, turn the highest-value items into an execution plan or patch set.
 
 ## Workflow
@@ -80,6 +82,9 @@ If the user asks for implementation after the review, turn the highest-value ite
   - parsers and validators at the edge
   - typed meaning in the middle
   - encoding/serialization only at the edge
+- Flag weakly-typed API return values when the shape is stable and known:
+  - `dict[str, Any]`, `Record<string, unknown>`, `object`, or `any` at response boundaries where a typed model or interface would fit
+  - especially where the caller immediately accesses named fields, making the wide type purely defensive
 - Preserve type safety when it carries real meaning:
   - keep separate types when they prevent invalid states or encode distinct invariants
   - prefer discriminated unions or specific classes over omnibus records when fields are not actually valid for every case
@@ -115,6 +120,10 @@ If the user asks for implementation after the review, turn the highest-value ite
 - Prefer deletion over frameworking:
   - if two code paths exist but one is clearly preferred, ask whether the other should be removed rather than abstracted
 - Prefer standard library or direct data structures over custom mini-frameworks when custom code adds maintenance without leverage.
+- Flag N-calls-in-a-loop where one batched call would suffice:
+  - repeated subprocess, HTTP, or database calls inside a loop over results
+  - especially when the loop result count is unbounded or driven by user data
+  - note these even when they are correctness-preserving: the structural shape (one call per row) is the simplification target, not just the performance cost
 - When the product is prerelease or headed for a major revision, explicitly look for places where backwards compatibility is the main reason complexity still exists.
   - if not clear, ask the user whether the complexity is justified by a real need to preserve old formats or pathways
 
@@ -129,6 +138,8 @@ Ask these while scanning:
 - Is this state owned in one place?
 - Does this helper preserve an old design that the current product no longer needs?
 - Is this API optimized for a hypothetical future instead of present usage?
+- Is this return type weaker than the actual shape warrants?
+- Is this loop making N external calls when one call and a membership check would work?
 
 ## Heuristics
 
