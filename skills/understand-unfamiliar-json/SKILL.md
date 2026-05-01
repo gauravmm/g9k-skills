@@ -15,7 +15,7 @@ Choose this skill when you need to:
 
 ## Approach
 
-Install `jqi`, run it on the data, then use the resulting structure summary to drive the next step.
+Install `jqi` if not already present, run it on the data, then use the resulting structure summary to drive the next step.
 
 ```sh
 TARGET=x86_64-unknown-linux-gnu
