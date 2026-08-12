@@ -163,7 +163,7 @@ venv/
 
 Write these sections, in this order, with nothing that the repo itself already says.
 
-- **Docs and comments.** Point at the `ste-writing` and `terse-comments` skills and say they apply to every comment and docstring, not only on request. Vendor both under `.claude/skills/` in the same commit, or the reference dangles. State the ASCII rule and name its exemptions. Ban historical narration: git holds it.
+- **Docs and comments.** Point at the `ste-writing` and `terse-comments` skills and say they apply to every comment and docstring, not only on request. Say that `ste-writing` also governs every design document, at document scale: short sentences, one claim each, and a bullet list wherever prose carries a set. A document written as an essay is the shape the rule exists to stop. Vendor both skills under `.claude/skills/` in the same commit, or the reference dangles. State the ASCII rule and name its exemptions. Ban historical narration: git holds it.
 - **Layout.** The package name, why there is no `src/`, the runtime-dependency rule, and any directory that is gitignored on purpose.
 - **Workflow.** The self-check command, the three tool commands, and the commit policy: commit freely when autonomous, wait for the user when interactive.
 - **A domain section.** The two or three facts that bite anyone who works here and that no file states. A device that sleeps, an API with no delete, a rate limit. This section is why the file exists. Skip it and CLAUDE.md is a restatement of the config.
