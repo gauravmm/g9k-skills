@@ -1,0 +1,590 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "markdown-it-py",
+#   "weasyprint",
+#   "viwoods-sync @ git+https://github.com/gauravmm/viwoods-sync",
+# ]
+# ///
+"""Markdown to a PDF sized for the Viwoods AiPaper, uploaded to its Learning section.
+
+For reading written specs away from the desk. The page box is the screen's 3:4 shape at its
+physical size, so the tablet's fit-to-width shows the type at the size it was set in.
+
+The device has no delete verb and no overwrite: a second push of the same file makes `Name(1)`,
+and only a hand on the tablet removes either. Every upload here is permanent.
+
+The tablet's LAN Transfer app must be in the foreground. A woken tablet alone refuses the
+connection.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import http.client
+import json
+import math
+import os
+import re
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+from pathlib import Path
+
+from markdown_it import MarkdownIt
+from viwoods_sync import Client, DeviceError, DeviceUnreachable
+
+# MagicDNS: the tablet is a Tailscale device, so this name resolves from any machine on the tailnet.
+HOST = os.environ.get("VIWOODS_HOST", "http://viwoods-aipaper:8090")
+SECTION = "APP_LEARNING"
+
+# What this needs from the machine, and the one line that supplies it. Checked rather than assumed:
+# a missing font substitutes silently, and the substitute is what the tablet would show.
+FONTS = ("Charis SIL", "IBM Plex Sans", "IBM Plex Mono")
+APT = (
+    "sudo apt install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fontconfig "
+    "fonts-sil-charis fonts-ibm-plex fonts-noto-core poppler-utils"
+)
+
+# The screen's 3:4 shape at its physical size (spec/future/EPAPER-SEND.md in the varuag repo).
+PAGE = "159mm 212mm"
+# Top, sides, bottom. Set against the device, not on paper: the sides are as thin as the reader
+# allows, and the top carries the clearance the tablet's own chrome takes.
+MARGIN = "12.5mm 5mm 6mm"
+
+# The device's own limits, which it does not enforce: it answers -104 and -102 instead.
+NAME_CAP = 125
+SIZE_CAP = 1 << 30
+
+# 2 MiB, sequential, each chunk retried twice at a 300 s timeout. The device's web UI does the
+# same and the protocol is not documented to allow anything else.
+CHUNK = 2 * 1024 * 1024
+TRIES = 3
+POST_TIMEOUT = 300.0
+
+# A sleeping tablet must cost the listing seconds, not the library default's three minutes. The
+# upload itself keeps the long timeout: a multi-megabyte chunk needs the time a listing must not.
+LIST_TIMEOUT = 8.0
+
+# A push to a sleeping tablet becomes a detached retry loop, so nothing has to wait on the device.
+# The deadline is a backstop against a forgotten process, not a policy: the pid is the kill switch.
+RETRY_S = 60
+DEADLINE_S = 24 * 3600
+
+
+def _mins(seconds: int) -> str:
+    count = max(1, seconds // 60)
+    return f"{count} minute" + ("" if count == 1 else "s")
+
+
+# Sans headings against a serif body, because a spec is scanned as much as it is read. Charis SIL
+# is the body face for its stroke weight and x-height: an e-ink panel loses a fine serif.
+CSS = """
+@page {
+  size: %(page)s;
+  margin: %(margin)s;
+  @bottom-left {
+    content: string(section);
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 7.5pt;
+    color: #555;
+  }
+  @bottom-right {
+    content: counter(page);
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 8pt;
+    color: #555;
+  }
+}
+@page :first { @bottom-left { content: none; } }
+
+html {
+  font-family: "Charis SIL", "Noto Serif", serif;
+  font-size: 10.5pt;
+  line-height: 1.44;
+}
+body {
+  margin: 0;
+  color: #000;
+  text-align: justify;
+  hyphens: auto;
+  hyphenate-limit-chars: 6 3 3;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-weight: 600;
+  line-height: 1.18;
+  text-align: left;
+  hyphens: none;
+  break-after: avoid;
+  margin: 1.15em 0 0.35em;
+}
+h1 {
+  font-size: 18pt;
+  margin: 0 0 0.7em;
+  padding-bottom: 0.25em;
+  border-bottom: 0.7pt solid #000;
+  letter-spacing: -0.012em;
+}
+h2 { font-size: 12.5pt; margin-top: 1.5em; string-set: section content(text); }
+h3 { font-size: 11pt; }
+h4 { font-size: 10.5pt; }
+h5, h6 { font-size: 10pt; font-weight: 500; font-style: italic; }
+/* A heading's code is part of the heading: it takes the weight, or it reads as a lighter aside. */
+h1 code, h2 code, h3 code, h4 code, h5 code, h6 code {
+  font-weight: inherit;
+  font-size: 0.9em;
+}
+
+p { margin: 0 0 0.55em; orphans: 2; widows: 2; }
+strong { font-weight: 700; }
+
+ul, ol { margin: 0 0 0.6em; padding-left: 1.35em; }
+li { margin-bottom: 0.18em; }
+li > ul, li > ol { margin: 0.18em 0 0; }
+
+code, pre, kbd, samp { font-family: "IBM Plex Mono", monospace; }
+code {
+  font-size: 0.87em;
+  /* Never hyphenated: the hyphenator turned `config.epaper.push_port` into `con-fig...`, which
+     reads as part of the identifier. Long tokens move or break, they do not gain a character. */
+  hyphens: none;
+  overflow-wrap: break-word;
+}
+pre {
+  font-size: 8.4pt;
+  line-height: 1.34;
+  /* Wrapped, not scrolled: paper has no second axis, and a spec's lines run long. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  text-align: left;
+  hyphens: none;
+  margin: 0.65em 0;
+  padding: 4pt 5pt;
+  border: 0.5pt solid #999;
+}
+pre code { font-size: inherit; }
+
+blockquote {
+  margin: 0.7em 0;
+  padding-left: 8pt;
+  border-left: 1.5pt solid #999;
+}
+
+table {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 8.8pt;
+  width: 100%%;
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  border-top: 1pt solid #000;
+  border-bottom: 1pt solid #000;
+}
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 3pt 6pt 3pt 0;
+  hyphens: none;
+}
+thead th { font-weight: 600; border-bottom: 0.8pt solid #000; }
+tbody tr + tr td { border-top: 0.4pt solid #ddd; }
+
+hr { border: 0; border-top: 0.5pt solid #999; margin: 1.15em 0; }
+img { max-width: 100%%; }
+
+/* A link's target is unreachable on paper, so only its text is kept. */
+a { color: #000; text-decoration: none; }
+"""
+
+
+# --- the render ------------------------------------------------------------
+
+
+def _front(text: str) -> tuple[str, str]:
+    """The body without its YAML front matter, and the `title:` the matter declared.
+
+    Not a YAML parse. Front matter is stripped because CommonMark reads the opening `---` as a
+    rule and prints the rest as a paragraph.
+    """
+    if not text.startswith("---\n"):
+        return text, ""
+    end = text.find("\n---", 3)
+    if end < 0:
+        return text, ""
+    head, body = text[4:end], text[end + 4 :].lstrip("\n")
+    found = re.search(r"^title:\s*(.+?)\s*$", head, re.M)
+    return body, (found.group(1).strip("\"'") if found else "")
+
+
+def _title(text: str, stem: str) -> str:
+    body, declared = _front(text)
+    if declared:
+        return declared
+    found = re.search(r"^#\s+(.+?)\s*#*$", body, re.M)
+    return found.group(1) if found else stem
+
+
+def preflight() -> None:
+    """Refuse a machine that would render this in substitute fonts."""
+    try:
+        asked = subprocess.run(
+            ["fc-list", ":", "family"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise SystemExit(f"fc-list will not run ({exc}), so the fonts cannot be checked.\n{APT}")
+    if asked.returncode != 0:
+        raise SystemExit(f"fc-list failed: {asked.stderr.strip() or asked.returncode}\n{APT}")
+    absent = [name for name in FONTS if name not in asked.stdout]
+    if absent:
+        raise SystemExit(f"missing fonts: {', '.join(absent)}\n{APT}")
+
+
+def render(text: str, title: str) -> bytes:
+    """One markdown document as PDF bytes."""
+    try:
+        # Imported here: pango loads at import and `--list` has no use for any of it.
+        from weasyprint import HTML
+    except (OSError, ImportError) as exc:
+        raise SystemExit(f"weasyprint will not load: {exc}\n{APT}")
+    body, _ = _front(text)
+    md = MarkdownIt("commonmark", {"typographer": True, "html": True})
+    md.enable(["table", "strikethrough", "smartquotes", "replacements"])
+    css = CSS % {"page": PAGE, "margin": MARGIN}
+    page = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        f"<title>{_escape(title)}</title><style>{css}</style></head>"
+        f"<body>{md.render(body)}</body></html>"
+    )
+    # base_url: a relative <img> resolves against the markdown file's own directory.
+    return HTML(string=page, base_url=os.getcwd()).write_pdf()
+
+
+def _escape(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# --- the device ------------------------------------------------------------
+
+
+def folders() -> list[dict]:
+    client = Client(HOST, timeout=LIST_TIMEOUT, retries=1)
+    return [item for item in client.list_folder(SECTION, "") if item.get("isFolder")]
+
+
+def target(want: str) -> dict:
+    """The Learning folder to upload into. `folderId` empty is a 400, so one must be chosen."""
+    found = folders()
+    if not found:
+        raise SystemExit("no folder under Learning; make one on the tablet first")
+    if want:
+        for item in found:
+            if str(item.get("fileName", "")).casefold() == want.casefold():
+                return item
+        names = ", ".join(repr(str(i.get("fileName"))) for i in found)
+        raise SystemExit(f"no Learning folder named {want!r}. Found: {names}")
+    if len(found) == 1:
+        return found[0]
+    names = ", ".join(repr(str(i.get("fileName"))) for i in found)
+    raise SystemExit(f"more than one Learning folder. Pick one with --folder: {names}")
+
+
+def _multipart(fields: dict[str, str], name: str, chunk: bytes) -> tuple[str, bytes]:
+    boundary = "----md2paper" + secrets.token_hex(8)
+    out = bytearray()
+    for key, value in fields.items():
+        out += f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+        out += value.encode() + b"\r\n"
+    out += (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode()
+    out += chunk + f"\r\n--{boundary}--\r\n".encode()
+    return boundary, bytes(out)
+
+
+def _post(path: str, boundary: str, body: bytes):
+    """One POST, and the envelope's `data`.
+
+    http.client and not urllib: urlopen sends `Connection: close`, which this device answers with
+    a truncated body and a reset (the pull side hits the same wall).
+    """
+    url = urllib.parse.urlsplit(HOST)
+    conn = http.client.HTTPConnection(url.hostname or "", url.port, timeout=POST_TIMEOUT)
+    try:
+        conn.request(
+            "POST",
+            f"/{path}",
+            body=body,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        raw = response.read()
+        if response.status != 200:
+            raise DeviceError(f"{response.status} {path}: {raw[:200]!r}", response.status)
+    except (OSError, http.client.HTTPException) as exc:
+        raise DeviceUnreachable(f"{path}: {exc} (is LAN Transfer in the foreground?)") from exc
+    finally:
+        conn.close()
+    envelope = json.loads(raw)
+    code = envelope.get("code")
+    if code != 200:
+        raise DeviceError(f"{path}: {envelope.get('msg')}", code if isinstance(code, int) else None)
+    return envelope["data"]
+
+
+def upload(data: bytes, name: str, folder_id: str, say=lambda _: None) -> str:
+    """The file onto the tablet, and the note id the device gives it back."""
+    if len(name.encode()) > NAME_CAP:
+        raise SystemExit(f"{name!r} is over the device's {NAME_CAP}-byte name limit")
+    if len(data) > SIZE_CAP:
+        raise SystemExit(f"{name}: {len(data)} bytes is over the device's 1 GiB file limit")
+    digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+    session = f"{digest}{secrets.randbelow(10001)}"
+    total = max(1, math.ceil(len(data) / CHUNK))
+    answer = ""
+    for index in range(total):
+        chunk = data[index * CHUNK : (index + 1) * CHUNK]
+        boundary, body = _multipart(
+            {
+                "chunkIndex": str(index),
+                "totalChunks": str(total),
+                "fileMd5": digest,
+                "fileId": session,
+                "fileName": name,
+                "appType": SECTION,
+                "folderId": folder_id,
+            },
+            name,
+            chunk,
+        )
+        for attempt in range(TRIES):
+            try:
+                answer = str(_post("upload_chunk", boundary, body))
+                break
+            except (DeviceUnreachable, DeviceError) as exc:
+                if attempt == TRIES - 1:
+                    raise
+                say(f"  chunk {index + 1}/{total} failed ({exc}); retrying")
+                time.sleep(2**attempt)
+        if total > 1:
+            say(f"  chunk {index + 1}/{total} sent")
+    # The last chunk answers the new note id; every earlier one ends in _chunk_success.
+    if answer.endswith("_chunk_success"):
+        raise DeviceError(f"the device never closed the upload of {name}: {answer!r}")
+    return answer
+
+
+# --- checks and output -----------------------------------------------------
+
+
+def _pages(pdf: Path) -> str:
+    try:
+        out = subprocess.run(
+            ["pdfinfo", str(pdf)], capture_output=True, text=True, timeout=30, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return "?"
+    found = re.search(r"^Pages:\s+(\d+)", out, re.M)
+    return found.group(1) if found else "?"
+
+
+def _selftest() -> int:
+    sample = (
+        "# Title\n\nA paragraph with *emphasis*, `code` and a very long word "
+        "counterrevolutionaries to hyphenate.\n\n"
+        "## Section\n\n- one\n- two\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n"
+        "```\nfenced code\n```\n\n> quoted\n"
+    )
+    assert _title(sample, "stem") == "Title"
+    assert _title("no heading", "stem") == "stem"
+    assert _front("---\ntitle: From Matter\n---\n\nbody\n") == ("body\n", "From Matter")
+    pdf = render(sample, "Title")
+    assert pdf.startswith(b"%PDF"), pdf[:20]
+    assert len(pdf) > 2000, len(pdf)
+    # The chunk arithmetic the device keys its session on.
+    for size, want in ((0, 1), (1, 1), (CHUNK, 1), (CHUNK + 1, 2), (3 * CHUNK, 3)):
+        assert max(1, math.ceil(size / CHUNK)) == want, (size, want)
+    boundary, body = _multipart({"k": "v"}, "x.pdf", b"bytes")
+    assert body.startswith(f"--{boundary}\r\n".encode())
+    assert body.endswith(f"\r\n--{boundary}--\r\n".encode())
+    assert b'name="k"\r\n\r\nv\r\n' in body and b'filename="x.pdf"' in body
+
+    # A retry must re-send only what is still undelivered. The device cannot overwrite, so a file
+    # sent twice becomes two notes and only a hand on the tablet removes the second.
+    room = Path(tempfile.mkdtemp(prefix="md2paper-selftest-"))
+    ours = [room / "a.pdf", room / "b.pdf"]
+    for one in ours:
+        one.write_bytes(b"%PDF-1.7\n")
+    sent: list[str] = []
+    tally = {"n": 0}
+
+    def _target(_want):
+        return {"noteId": "fid", "fileName": "Specs"}
+
+    def _upload(_data, name, _folder, say=lambda _: None):
+        tally["n"] += 1
+        if tally["n"] == 2:  # b.pdf's first try: the tablet drops out mid-batch
+            raise DeviceUnreachable("asleep")
+        sent.append(name)
+        return f"note-{name}"
+
+    here = globals()
+    was = (here["target"], here["upload"], here["_say"], time.sleep)
+    here["target"], here["upload"], here["_say"] = _target, _upload, lambda _: None
+    time.sleep = lambda _: None
+    try:
+        assert deliver(ours, "") == 0
+    finally:
+        here["target"], here["upload"], here["_say"] = was[0], was[1], was[2]
+        time.sleep = was[3]
+    assert sent == ["a.pdf", "b.pdf"], sent
+    assert tally["n"] == 3, tally  # a.pdf, b.pdf refused, b.pdf again
+
+    print("selftest ok")
+    return 0
+
+
+# --- delivery ---------------------------------------------------------------
+
+
+def reachable(want: str) -> dict | None:
+    """The target folder if the tablet is answering now, else None.
+
+    A device fault is not a device: a folder named wrong still raises, because retrying that for a
+    day would never fix it.
+    """
+    try:
+        return target(want)
+    except (DeviceUnreachable, DeviceError):
+        return None
+
+
+def _say(line: str) -> None:
+    print(f"{time.strftime('%H:%M:%S')} {line}", flush=True)
+
+
+def deliver(pdfs: list[Path], want: str) -> int:
+    """Upload each file, retrying a sleeping tablet until all of them land.
+
+    Runs detached, so this writes a log and not a terminal. A delivered file leaves the list at
+    once: the device cannot overwrite, so a retry that re-sent one would leave a `Name(1)` beside
+    it rather than replacing it.
+    """
+    left = list(pdfs)
+    started = time.monotonic()
+    while True:
+        try:
+            folder = target(want)
+            while left:
+                note = upload(left[0].read_bytes(), left[0].name, str(folder["noteId"]), say=_say)
+                _say(f"delivered {left[0].name} to Learning/{folder.get('fileName')} as {note}")
+                left.pop(0)
+            return 0
+        except (DeviceUnreachable, DeviceError) as exc:
+            waited = time.monotonic() - started
+            if waited + RETRY_S > DEADLINE_S:
+                _say(f"giving up after {waited / 3600:.1f} h, {len(left)} file(s) undelivered")
+                return 1
+            _say(f"tablet not answering ({exc}); retrying in {_mins(RETRY_S)}")
+            time.sleep(RETRY_S)
+
+
+def _spawn(pdfs: list[Path], want: str) -> tuple[int, Path]:
+    """This same script, detached, in delivery mode. Returns its pid and its log."""
+    log = pdfs[0].parent / "md2paper.log"
+    argv = [sys.executable, str(Path(__file__).resolve()), "--deliver"]
+    if want:
+        argv += ["--folder", want]
+    argv += [str(p) for p in pdfs]
+    with open(log, "ab") as sink, open(os.devnull, "rb") as quiet:
+        child = subprocess.Popen(
+            argv, stdin=quiet, stdout=sink, stderr=subprocess.STDOUT, start_new_session=True
+        )
+    return child.pid, log
+
+
+# --- the CLI ---------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="md2paper",
+        description="Render markdown to an AiPaper-sized PDF and put it in Learning.",
+    )
+    parser.add_argument("files", nargs="*", type=Path, help="markdown files")
+    parser.add_argument(
+        "-n", "--dry-run", action="store_true", help="render only, keep the PDF, upload nothing"
+    )
+    parser.add_argument("-o", "--out", type=Path, help="keep the PDFs in this directory")
+    parser.add_argument(
+        "--folder", default=os.environ.get("MD2PAPER_FOLDER", ""), help="Learning folder by name"
+    )
+    parser.add_argument("--list", action="store_true", help="list the Learning folders and exit")
+    parser.add_argument("--selftest", action="store_true", help=argparse.SUPPRESS)
+    # The detached half of a push to a sleeping tablet. Its files are the rendered PDFs.
+    parser.add_argument("--deliver", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    if args.selftest:
+        preflight()
+        return _selftest()
+    if args.deliver:
+        return deliver(args.files, args.folder)
+    if args.list:
+        for item in folders():
+            print(f"{item.get('fileName')}\t{item.get('noteId')}")
+        return 0
+    if not args.files:
+        parser.error("give at least one markdown file")
+
+    missing = [str(f) for f in args.files if not f.is_file()]
+    if missing:
+        raise SystemExit("not a file: " + ", ".join(missing))
+    preflight()
+
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+    # One directory for the batch, because the delivery log sits beside the files it is delivering.
+    keep = args.out or Path(tempfile.mkdtemp(prefix="md2paper-"))
+
+    made: list[Path] = []
+    for path in args.files:
+        text = path.read_text(encoding="utf-8")
+        pdf = render(text, _title(text, path.stem))
+        kept = keep / f"{path.stem}.pdf"
+        kept.write_bytes(pdf)
+        made.append(kept)
+        print(f"{path} -> {kept} ({len(pdf) // 1024} KiB, {_pages(kept)} pages)")
+    if args.dry_run:
+        return 0
+
+    # Asked once, briefly. An awake tablet is delivered to here, where a failure is still visible.
+    folder = reachable(args.folder)
+    if folder is not None:
+        for pdf in made:
+            note = upload(pdf.read_bytes(), pdf.name, str(folder["noteId"]), say=print)
+            print(f"  uploaded to Learning/{folder.get('fileName')} as {note}")
+        return 0
+
+    pid, log = _spawn(made, args.folder)
+    print(
+        f"the tablet is not answering, so delivery is now a background task: pid {pid}\n"
+        f"it will auto retry every {_mins(RETRY_S)} until delivered, "
+        f"giving up after {DEADLINE_S // 3600} h\n"
+        f"log: {log}\n"
+        f"kill it with: kill {pid}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

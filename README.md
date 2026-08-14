@@ -10,6 +10,7 @@ This repository currently includes:
 - `terse-comments`, a skill for writing and tightening comments and docstrings so they state the decision and only what the code cannot say. Written by me, and it layers on top of `ste-writing`.
 - `python-project-scaffold`, a skill for imposing one shape on a Python project: uv, ruff, pyright in strict mode, pre-commit, GitHub CI, one self-check, and a CLAUDE.md that governs docs and comments.
 - `typography`, a skill for setting type: scales, measure, leading, pairing, variable fonts, and font loading, with references for patterns, failure modes, and validations. From [`omer-metin/skills-for-antigravity`](https://github.com/omer-metin/skills-for-antigravity/tree/main/skills/typography), included here under its Apache 2.0 license, unchanged apart from an attribution line.
+- `md2paper`, a skill for sending markdown to a Viwoods AiPaper e-ink tablet as a PDF set for its screen, bundling the `md2paper` script it documents.
 
 ## Install
 
@@ -28,6 +29,7 @@ npx skills add gauravmm/g9k-skills --skill ste-writing
 npx skills add gauravmm/g9k-skills --skill terse-comments
 npx skills add gauravmm/g9k-skills --skill python-project-scaffold
 npx skills add gauravmm/g9k-skills --skill typography
+npx skills add gauravmm/g9k-skills --skill md2paper
 ```
 
 ## License
