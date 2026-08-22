@@ -159,6 +159,18 @@ venv/
 .coverage
 ```
 
+## .vscode/settings.json
+
+```json
+{
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.ruff_cache": true,
+    "**/.venv": true
+  }
+}
+```
+
 ## CLAUDE.md
 
 Write these sections, in this order, with nothing that the repo itself already says.
