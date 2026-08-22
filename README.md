@@ -9,6 +9,7 @@ This repository currently includes:
 - `ste-writing`, a skill for rewriting prose into ASD-STE100 Simplified Technical English, with a linter that scores the mechanical subset. By Ege Çelebi, from [`woosal1337/blog`](https://github.com/woosal1337/blog/tree/main/videos/ep01-the-cure-for-ai-slop) ("The Cure for AI Slop"), included here under its MIT license.
 - `terse-comments`, a skill for writing and tightening comments and docstrings so they state the decision and only what the code cannot say. Written by me, and it layers on top of `ste-writing`.
 - `python-project-scaffold`, a skill for imposing one shape on a Python project: uv, ruff, pyright in strict mode, pre-commit, GitHub CI, one self-check, and a CLAUDE.md that governs docs and comments.
+- `typst-project-scaffold`, a skill for imposing one shape on a Typst project: a Makefile, typstyle, cspell, vendored fonts, and GitHub CI that builds the PDF and attaches it to tagged releases.
 - `typography`, a skill for setting type: scales, measure, leading, pairing, variable fonts, and font loading, with references for patterns, failure modes, and validations. From [`omer-metin/skills-for-antigravity`](https://github.com/omer-metin/skills-for-antigravity/tree/main/skills/typography), included here under its Apache 2.0 license, unchanged apart from an attribution line.
 - `md2paper`, a skill for sending markdown to a Viwoods AiPaper e-ink tablet as a PDF set for its screen, bundling the `md2paper` script it documents.
 
@@ -28,6 +29,7 @@ npx skills add gauravmm/g9k-skills --skill understand-unfamiliar-json
 npx skills add gauravmm/g9k-skills --skill ste-writing
 npx skills add gauravmm/g9k-skills --skill terse-comments
 npx skills add gauravmm/g9k-skills --skill python-project-scaffold
+npx skills add gauravmm/g9k-skills --skill typst-project-scaffold
 npx skills add gauravmm/g9k-skills --skill typography
 npx skills add gauravmm/g9k-skills --skill md2paper
 ```
