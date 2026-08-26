@@ -83,20 +83,24 @@ repos:
     hooks:
       - id: markdownlint-cli2
         args: [--fix]
-  - repo: local
+  # mdformat runs after markdownlint-cli2, so its normalization is the last word on layout.
+  - repo: https://github.com/hukkin/mdformat
+    rev: 1.0.0
     hooks:
-      - id: ascii-only
-        name: ascii only
-        entry: >-
-          python3 -c "import sys; bad = [f for f in sys.argv[1:] if not
-          open(f, 'rb').read().isascii()]; sys.exit('non-ascii in: ' + ' '.join(bad)
-          if bad else 0)"
-        language: system
-        types_or: [python, markdown]
-        exclude: ^(spec|\.claude)/
+      - id: mdformat
+        args: [--wrap, "no", --number]
+        additional_dependencies:
+          - mdformat-gfm
+  - repo: https://github.com/mit-d/check-unicode
+    rev: v0.6.0
+    hooks:
+      - id: check-unicode
+        args: [--fix]
 ```
 
 The hook id is `ruff-check`. `ruff` is a deprecated alias. Exempt any directory that quotes foreign output or vendors third-party text, and say why in CLAUDE.md.
+
+Plain ASCII enforcement is one stdlib call, `open(f, 'rb').read().isascii()`, and a local hook running that is enough for a project that only wants the rule. `check-unicode` earns the dependency by also catching Trojan Source bidi overrides and zero-width characters, and by rewriting smart quotes and em dashes under `--fix` instead of only refusing the commit. It is a small single-maintainer package, so pin the `rev`.
 
 ## .markdownlint-cli2.jsonc
 
@@ -105,18 +109,22 @@ The hook id is `ruff-check`. `ruff` is a deprecated alias. Exempt any directory 
   "config": {
     "MD013": false,
     "MD033": false,
-    // Pin the table style. Left to infer, MD060 reads a table whose cells happen to
-    // line up as "aligned" and then demands padding in every other table.
-    "MD060": { "style": "compact" }
+    // mdformat pads every table to aligned and runs last, so a table-style rule here
+    // only ever loses the argument. Let the formatter own table layout.
+    "MD060": false
   },
   // Vendored markdown is not yours to reformat.
-  "ignores": [".claude/**"]
+  "ignores": [".claude/**", ".agents/**"]
 }
 ```
 
-Run `npx markdownlint-cli2@<ver> --fix "**/*.md"` once and read the diff. It settles table pipes and fence spacing on its own. What is left is MD040, one bare code fence at a time, and the fix is a language tag, not a disabled rule. Use `text` for output, paths and pseudo-code.
+Run `npx markdownlint-cli2@<ver> --fix "**/*.md"` once and read the diff. What is left is MD040, one bare code fence at a time, and the fix is a language tag, not a disabled rule. Use `text` for output, paths and pseudo-code.
 
-Three linters exist. `markdownlint-cli2` is the default choice: fastest, the widest rule set, the best autofix, and it parses YAML front matter without configuration. `markdownlint-cli` is the same ruleset with a weaker config story. `pymarkdown` is Python, which is worth taking only when a Node toolchain in the hook chain is unacceptable, and then remember `extensions.front-matter.enabled`, without which it reads a skill file's YAML header as a setext heading.
+Take both, because they do different jobs. `markdownlint-cli2` is a linter: it evaluates sixty numbered rules and reports each violation by id. `mdformat` is a formatter: it parses to a CommonMark AST and reprints it, the way `ruff format` reprints Python. A formatter cannot report what it will not rewrite. Run mdformat alone and a fence with no language tag, a heading that skips a level, a bare URL and a duplicate heading all survive untouched, because none of them is a layout question.
+
+The order matters. markdownlint-cli2 fixes first, mdformat normalizes second, and mdformat wins any disagreement about layout. Reverse them and the two hooks rewrite each other on every run.
+
+mdformat needs `mdformat-gfm` before it will keep a table intact, and it flattens any dialect its parser does not model - MDX, Liquid tags, directive syntax. Reach for `--wrap no` unless the project wants reflowed prose. Among linters, `markdownlint-cli` is the same ruleset as cli2 with a weaker config story. `pymarkdown` is Python, which is worth taking only when a Node toolchain in the hook chain is unacceptable, and then remember `extensions.front-matter.enabled`, without which it reads a skill file's YAML header as a setext heading.
 
 ## .github/workflows/ci.yml
 
