@@ -4,10 +4,14 @@
 # dependencies = [
 #   "markdown-it-py",
 #   "weasyprint",
+#   "pypdf",
 #   "viwoods-sync @ git+https://github.com/gauravmm/viwoods-sync",
 # ]
 # ///
 """Markdown to a PDF sized for the Viwoods AiPaper, uploaded to its Learning section.
+
+A PDF given instead of markdown is sent as it stands. --trim stands landscape pages up
+and crops each page to 4:3 (tall:wide) first, without rasterising or touching the source.
 
 For reading written specs away from the desk. The page box is the screen's 3:4 shape at its
 physical size, so the tablet's fit-to-width shows the type at the size it was set in.
@@ -34,6 +38,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from io import BytesIO
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -269,6 +274,87 @@ def _escape(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _from_markdown(path: Path) -> bytes:
+    text = path.read_text(encoding="utf-8")
+    return render(text, _title(text, path.stem))
+
+
+def _from_pdf(path: Path) -> bytes:
+    """A PDF is what the device wants, so it rides through untouched, page box and all."""
+    return path.read_bytes()
+
+
+def _crop_4x3(page) -> None:
+    """Shrink the page box to 4:3 (tall:wide), centred. Content is not scaled."""
+    from pypdf.generic import RectangleObject
+
+    mb = page.mediabox
+    llx, lly = float(mb.left), float(mb.bottom)
+    urx, ury = float(mb.right), float(mb.top)
+    w, h = urx - llx, ury - lly
+    target_h = w * 4 / 3
+    if h > target_h:
+        extra = h - target_h
+        llx, lly, urx, ury = llx, lly + extra / 2, urx, ury - extra / 2
+    else:
+        target_w = h * 3 / 4
+        if w <= target_w:
+            return
+        extra = w - target_w
+        llx, lly, urx, ury = llx + extra / 2, lly, urx - extra / 2, ury
+    box = RectangleObject([llx, lly, urx, ury])
+    page.mediabox = page.cropbox = page.trimbox = page.bleedbox = page.artbox = box
+
+
+def trim_pdf(data: bytes) -> bytes:
+    """Stand landscape pages up and crop every page to 4:3 (tall:wide), PAGE's shape.
+
+    A box change, not a raster. Fit-to-width on the tablet then fills the screen instead
+    of letterboxing A4's extra height. Mutate the writer's copy: rotating a page still
+    attached to the reader left landscape Word pages shifted.
+    """
+    from pypdf import PdfReader, PdfWriter
+
+    src = PdfReader(BytesIO(data))
+    out = PdfWriter()
+    for incoming in src.pages:
+        out.add_page(incoming)
+        page = out.pages[-1]
+        if int(page.get("/Rotate") or 0) % 360:
+            page.transfer_rotation_to_content()
+        if float(page.mediabox.width) > float(page.mediabox.height):
+            page.rotate(90)
+            page.transfer_rotation_to_content()
+        _crop_4x3(page)
+    buf = BytesIO()
+    out.write(buf)
+    return buf.getvalue()
+
+
+# What a file extension turns into. Add a reader here and the CLI accepts that extension.
+CONVERT = {
+    ".md": _from_markdown,
+    ".markdown": _from_markdown,
+    ".pdf": _from_pdf,
+}
+# Only these go near weasyprint, so only these need the font check.
+RENDERED = (_from_markdown,)
+
+
+def _reader(path: Path):
+    found = CONVERT.get(path.suffix.lower())
+    if found is None:
+        kinds = ", ".join(sorted(CONVERT))
+        raise SystemExit(f"{path}: nothing reads {path.suffix or 'a bare name'!r}. Accepted: {kinds}")
+    return found
+
+
+def _out_name(path: Path, want: str) -> str:
+    """The name the tablet will show. Always ends in .pdf, because everything sent is one."""
+    stem = want or path.stem
+    return stem if stem.lower().endswith(".pdf") else f"{stem}.pdf"
+
+
 # --- the device ------------------------------------------------------------
 
 
@@ -413,6 +499,30 @@ def _selftest() -> int:
     # The chunk arithmetic the device keys its session on.
     for size, want in ((0, 1), (1, 1), (CHUNK, 1), (CHUNK + 1, 2), (3 * CHUNK, 3)):
         assert max(1, math.ceil(size / CHUNK)) == want, (size, want)
+    # Dispatch by extension, and the name the tablet ends up showing.
+    room = Path(tempfile.mkdtemp(prefix="md2paper-selftest-"))
+    already = room / "deck.pdf"
+    already.write_bytes(b"%PDF-1.7\nnot rendered\n")
+    assert _reader(already) is _from_pdf
+    assert _reader(room / "spec.MD") is _from_markdown
+    assert _from_pdf(already) == already.read_bytes()
+    assert _out_name(already, "") == "deck.pdf"
+    assert _out_name(already, "260815-deck") == "260815-deck.pdf"
+    assert _out_name(already, "260815-deck.pdf") == "260815-deck.pdf"
+    from pypdf import PdfReader, PdfWriter
+
+    fat = PdfWriter()
+    fat.add_blank_page(width=594.96, height=842.04)
+    fat.add_blank_page(width=842.04, height=594.96)
+    raw = BytesIO()
+    fat.write(raw)
+    trimmed = PdfReader(BytesIO(trim_pdf(raw.getvalue())))
+    assert len(trimmed.pages) == 2
+    for page in trimmed.pages:
+        w, h = float(page.mediabox.width), float(page.mediabox.height)
+        assert abs(h / w - 4 / 3) < 1e-6, (w, h)
+        assert abs(w - 594.96) < 1e-6, w
+
     boundary, body = _multipart({"k": "v"}, "x.pdf", b"bytes")
     assert body.startswith(f"--{boundary}\r\n".encode())
     assert body.endswith(f"\r\n--{boundary}--\r\n".encode())
@@ -420,7 +530,6 @@ def _selftest() -> int:
 
     # A retry must re-send only what is still undelivered. The device cannot overwrite, so a file
     # sent twice becomes two notes and only a hand on the tablet removes the second.
-    room = Path(tempfile.mkdtemp(prefix="md2paper-selftest-"))
     ours = [room / "a.pdf", room / "b.pdf"]
     for one in ours:
         one.write_bytes(b"%PDF-1.7\n")
@@ -518,13 +627,20 @@ def _spawn(pdfs: list[Path], want: str) -> tuple[int, Path]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="md2paper",
-        description="Render markdown to an AiPaper-sized PDF and put it in Learning.",
+        description="Put a markdown file (rendered to AiPaper size) or a PDF into Learning.",
     )
-    parser.add_argument("files", nargs="*", type=Path, help="markdown files")
+    parser.add_argument("files", nargs="*", type=Path, help="markdown or PDF files")
     parser.add_argument(
         "-n", "--dry-run", action="store_true", help="render only, keep the PDF, upload nothing"
     )
     parser.add_argument("-o", "--out", type=Path, help="keep the PDFs in this directory")
+    parser.add_argument("--name", default="", help="name to send under, for a single file")
+    parser.add_argument(
+        "--trim",
+        "--crop",
+        action="store_true",
+        help="for PDFs, stand landscape pages up and crop to 4:3 (tall:wide)",
+    )
     parser.add_argument(
         "--folder", default=os.environ.get("MD2PAPER_FOLDER", ""), help="Learning folder by name"
     )
@@ -544,12 +660,16 @@ def main() -> int:
             print(f"{item.get('fileName')}\t{item.get('noteId')}")
         return 0
     if not args.files:
-        parser.error("give at least one markdown file")
+        parser.error("give at least one markdown or PDF file")
+    if args.name and len(args.files) > 1:
+        parser.error("--name names one file, so give one file")
 
     missing = [str(f) for f in args.files if not f.is_file()]
     if missing:
         raise SystemExit("not a file: " + ", ".join(missing))
-    preflight()
+    readers = [_reader(f) for f in args.files]
+    if any(read in RENDERED for read in readers):
+        preflight()
 
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)
@@ -557,10 +677,12 @@ def main() -> int:
     keep = args.out or Path(tempfile.mkdtemp(prefix="md2paper-"))
 
     made: list[Path] = []
-    for path in args.files:
-        text = path.read_text(encoding="utf-8")
-        pdf = render(text, _title(text, path.stem))
-        kept = keep / f"{path.stem}.pdf"
+    for path, read in zip(args.files, readers):
+        pdf = read(path)
+        if args.trim and read is _from_pdf:
+            pdf = trim_pdf(pdf)
+        # Named here and not at upload: the copy on disk is what a retry re-sends.
+        kept = keep / _out_name(path, args.name)
         kept.write_bytes(pdf)
         made.append(kept)
         print(f"{path} -> {kept} ({len(pdf) // 1024} KiB, {_pages(kept)} pages)")

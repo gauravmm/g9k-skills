@@ -1,6 +1,6 @@
 ---
 name: md2paper
-description: Render markdown to a PDF sized for a Viwoods AiPaper e-ink tablet and upload it to the tablet's Learning section over LAN, for reading specs and long documents away from the desk.
+description: Render markdown to a PDF sized for a Viwoods AiPaper e-ink tablet, or send an existing PDF (optionally cropped to 4:3), and upload it to the tablet's Learning section over LAN, for reading specs and long documents away from the desk.
 ---
 
 # Skill: Send Markdown to a Viwoods AiPaper
@@ -19,6 +19,8 @@ It runs under `uv` through a PEP 723 header, so it resolves its own dependencies
 
 ```sh
 md2paper spec/DESIGN.md          # render, then upload to Learning
+md2paper notes.pdf               # send a PDF as it stands
+md2paper --trim notes.pdf        # crop to 4:3, stand landscape pages up, then send
 md2paper -n -o out/ *.md         # render only, keep the PDFs
 md2paper --list                  # Learning folders on the device
 md2paper --folder Specs a.md     # pick the destination folder by name
@@ -31,6 +33,7 @@ md2paper --folder Specs a.md     # pick the destination folder by name
 - Renders through `markdown-it-py` and `weasyprint` onto a 159x212 mm page, the screen's 3:4 shape at its physical size, so the tablet shows the type at the size it was set in.
 - Sets a serif body against sans headings, justified with hyphenation, and code that wraps instead of running off the page.
 - Uploads over the device's chunked `/upload_chunk` protocol into the Learning section, which is the only section that accepts a PDF.
+- A PDF is uploaded as-is. `--trim` (`--crop`) stands landscape pages up and crops each page to 4:3 (tall:wide) first — a box change, not a raster — and does not touch the source file.
 
 ## Facts Worth Knowing First
 
