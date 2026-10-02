@@ -1,11 +1,22 @@
 ---
 name: simplify-codebase
-description: Plan or execute a cleanup pass over an existing codebase - collapsing duplication, splitting files that do more than one thing, replacing hand-rolled machinery with something already installed, and deleting what is dead. Use when the user asks to simplify, clean up, refactor broadly, reduce duplication or test count, "make this less of a mess", consolidate storage or abstractions, or asks for a refactor spec. Not for adding features, and not for hunting bugs.
+description: Review, plan or execute a cleanup pass over an existing codebase - collapsing duplication, splitting files that do more than one thing, simplifying APIs, replacing hand-rolled machinery with something already installed, and deleting what is dead or unused. Use when the user asks to simplify, clean up, refactor broadly, reduce duplication or test count, "make this less of a mess", consolidate storage or abstractions, remove unnecessary gadgets, asks for simplification ideas or a broad "make the codebase simpler" audit, or asks for a refactor spec. Not for adding features, and not for hunting bugs.
 ---
 
 # Simplifying a codebase
 
 The goal is fewer concepts, not fewer characters. A pass that removes 500 lines and adds two new indirections has lost.
+
+## Principles
+
+- Programmer time is expensive. Optimize for simplicity, interpretability and elegance over cleverness, configurability, or preserving historical structure.
+- Favor the design that is easiest to explain to a new maintainer, and fewer concepts over more generic ones.
+- Favor explicit dominant paths over symmetric but rarely used alternatives.
+- Move complexity to one well-named boundary rather than spreading it across helpers.
+- Transform before erasure: do cleanup, filtering, truncation and policy decisions while data is in its richest typed form, keep one canonical structured representation as long as possible, and serialize or adapt it at one clear boundary. Derive multiple output views from that representation instead of post-processing rendered data.
+- Keep type distinctions that encode real invariants or valid states. Merge types only when the differences are decorative.
+- Use `assert` for internal invariants and impossible states, exceptions for failures, and structured return types for interfaces likely to grow.
+- If the software is prerelease or headed for a major revision, do not preserve backwards compatibility by default (section 13).
 
 Work in this order. Each step is cheap and makes the next one smaller.
 
@@ -58,7 +69,29 @@ Things that duplicate silently:
 - **Repeated keyword arguments in declarative registries.** Test cases, routes or jobs that all pass the same handful of arguments. Move them into a constructor default. This is often the largest production win in a registry-heavy codebase.
 - **Cross-module private imports.** `from other_module import _private_thing` is the loudest possible signal that the thing lives in the wrong file. Grep for imports of underscore names across package boundaries and treat every hit as a finding.
 
-## 5. Count call sites before extracting
+## 5. Local simplifications
+
+Inside functions, classes and files:
+
+- Fewer branches, temporary variables and state mutations. Early returns instead of nested conditionals. Direct data flow instead of hand-rolled plumbing. Drop single-use variables where that reads better.
+- Delete stub functions that only rename another call, forward one line, or hide no policy. Delete one-off helpers that exist only to preserve an old layering choice.
+- Extract an object when state and behavior travel together, when the same bundle of parameters repeats, when lifecycle logic spreads across call sites, or when an invariant is enforced informally.
+- Collapse duplicate parsing, normalization, validation or formatting into one path.
+- Replace boolean- or sentinel-heavy control flow with enums, clearer objects, or distinct code paths.
+- Replace open-coded guard branches for impossible states with `assert`. Raise instead of returning ad hoc error objects or strings through normal result paths when the caller already handles failure.
+
+## 6. Structural simplifications
+
+- **API surface.** Fewer arguments, fewer optional knobs, fewer overlapping entrypoints. Two pathways for the same action (an implicit-target variant and an explicit-target one) usually fold into one.
+- **Special cases.** Fold repeated special cases into one mechanism when the abstraction is real, such as several inline behaviors moved into one dispatch path.
+- **Gadgets.** Code for a feature or future that is no longer intended, compatibility layers nobody relies on, extension points with no concrete users, and caches, planners, wrappers or managers that add indirection without paying rent. See also section 9.
+- **Parallel representations.** The same concept stored in several shapes, dual APIs for one action, or separate metadata and runtime paths that could be unified.
+- **Split ownership.** Too many layers touching the same state, as when a builder, a registry, a loop and a helper each partly own one behavior.
+- **Speculative abstractions.** Plugin systems, strategy hooks, config knobs, generic wrappers or adapters built for flexibility the product does not need. If two paths exist and one is clearly preferred, delete the other rather than abstracting over both.
+- **Mini-frameworks.** Prefer the standard library or direct data structures when custom machinery adds maintenance without leverage.
+- **N calls in a loop.** Repeated subprocess, HTTP or database calls inside a loop over results, especially when the count is unbounded or driven by user data. One batched call plus a membership check is the simplification target even when the loop is correct.
+
+## 7. Count call sites before extracting
 
 Duplication is not automatically worth removing. Three call sites of a five-line block do not need a module; they might not need a function.
 
@@ -66,7 +99,7 @@ Extract when the duplicated thing carries a **decision** - a policy, a default, 
 
 Never create an abstraction with one implementation. If there is one caller today and a second is "coming", wait for the second: it will define the interface better than your guess will.
 
-## 6. One file, one goal
+## 8. One file, one goal
 
 Split a file when it holds two jobs that a reader has to hold in their head at once, not merely when it is long. The reliable test: can you write the module docstring in one sentence without "and"?
 
@@ -84,7 +117,7 @@ Watch for dependency direction. If moving a helper would make a low-level module
 
 Split the module's *tests* with it. A test file larger than the module it covers is a sign the module had several jobs all along, and leaving the test whole undoes half the split.
 
-## 7. Delete before you abstract
+## 9. Delete before you abstract
 
 Ranked by value: delete > move > collapse > abstract.
 
@@ -99,7 +132,7 @@ Two more cases are not dead, but often cost as much:
 - **Reachable but unused capabilities.** The code is imported and wired, but no shipped configuration, case, schedule or caller exercises it: an optional backend left blank in every config, an authoring mode no shipped case uses, injection points for callers that do not exist. Find these by reading configs, registries and CLI usage, not imports. Retiring one is a product decision, so list it under approval with the behavior that goes away.
 - **Finished migrations and fallbacks.** Cutover commands, compatibility readers, and fallbacks that mint a value when configuration is missing often outlive the transition they served. State the precondition for deleting each one, such as the old schedule drained or the key configured everywhere, and ask the user whether it holds.
 
-## 7a. Shrinking the test suite
+## 10. Shrinking the test suite
 
 Consolidating tests and cutting the test count are different jobs. Shared fakes, decorators and table-driven tests cut lines but rarely cut collected tests, and parameterizing can raise the count. If the user wants fewer tests, run a separate deletion survey. Every proposed deletion must name the retained test that still covers its contract, and risky deletions get flagged. Expect about 10%, not 30%.
 
@@ -116,23 +149,25 @@ Kinds of consolidation that cut lines:
 - Fakes duplicated across test files move into one support module with a unique basename.
 - Tests of a pure library function move into that library's own package. Keep only the integration checks in the consumer.
 
-## 7b. Trimming prose
+## 11. Trimming prose
 
 Comments that narrate the adjacent code, record history, or repeat rationale already kept in a design-decisions document can go. A prose-only pass is cheap and often removes as many lines as a whole deduplication stage.
 
 Keep provider quirks, security and replay reasoning, idioms at system boundaries, and caveats about future limits ("spool this to a file if it grows"). Trimming workers delete exactly those caveats unless told otherwise, so spot-check the diff. Model-visible strings are specifications, not prose: tool docstrings, prompts, field descriptions, error text. Never trim them for redundancy.
 
-## 8. Prefer structure over strings
+## 12. Prefer structure over strings
 
 The highest-value data-model fixes are almost always these:
 
 - A column encoding two facts in one string (`"done:tag-a+tag-b"`). Split it.
 - The same object stored half as columns and half as a JSON blob, with a hand-written function to decide which fields go where. Store the object.
-- Loose `dict[str, Any]` crossing a boundary where the caller immediately reads three known fields.
+- Loose `dict[str, Any]` crossing a boundary where the caller immediately reads three known fields. The same goes for `Record<string, unknown>`, `object` or `any` at a response boundary with a stable shape.
+- Tuples with positional meaning, or stringly encoded multi-purpose payloads, where a dataclass or typed record would name the fields.
+- One omnibus record whose fields are not valid for every case. Prefer a discriminated union or specific classes.
 
 Do the transformation while the data is still typed, and serialize once at the edge.
 
-## 9. When there is nothing to preserve, say so out loud
+## 13. When there is nothing to preserve, say so out loud
 
 If the project is prerelease, or the real data lives somewhere else, then migrations, compatibility shims and dual-read paths are pure cost. Confirm it once with the user, write it at the top of the plan, and then take the clean break everywhere - including deleting migration code the old design had already specified.
 
@@ -140,7 +175,7 @@ Be precise about what "wipe it" means. `ls` the directory and check for a nested
 
 Watch the test suite's hermeticity while you are moving state around. Suites usually redirect one root path in a fixture, and everything safe is *derived* from it. A new config field spelled as its own literal escapes that redirect, which points the tests at production -- so derive it, the way the existing safe fields are derived. Check whether the fields that already exist are as safe as you assume; one of them usually is not, and it is the one that deletes files.
 
-## 8a. Two structural patterns worth hunting for by name
+## 14. Two structural patterns worth hunting for by name
 
 **A callback that cannot carry what it must record.** When a producer hands work to a consumer and the consumer has to write down that it did the work, check whether the callback signature can even name the thing. If it cannot, the usual instinct is to widen the signature. The better move is often to invert it: let the consumer *poll* for its own work, selecting rows by the state it maintains. It then has the identity by construction, and the hand-off, its ordering constraints, and any separate catch-up sweep all disappear together. Serialize with whatever "one worker" mechanism the codebase already has.
 
@@ -150,7 +185,7 @@ Two things to get right when you invert: the predicate almost always needs to ex
 
 Two cautions. Background it *durably*, using whatever the runtime offers for recoverable child work - firing a bare in-memory task converts a slow path into a lossy one. And check for the deliberate exception: some synchronous calls exist so that a downstream consumer cannot observe a half-built state, and their docstrings usually say so. One counterexample is what keeps this from becoming "queue everything".
 
-## 9a. Run the library. Do not reason about it.
+## 15. Run the library. Do not reason about it.
 
 Every plausible-sounding claim about a library's behaviour is a coin flip until you execute it. In one pass over a small codebase, four separate API assumptions that "obviously" held were false:
 
@@ -163,7 +198,7 @@ Each was a one-paragraph script to settle and each would have been a production 
 
 The same goes for the framework you already depend on: read its source for what it keys on. Durable-execution and queue libraries commonly resume on a *positional ordinal* as well as a name, which means adding or reordering a step breaks in-flight work exactly as badly as renaming one -- a rule you will not find by grepping for names.
 
-## 9b. Changing a representation breaks its sentinels
+## 16. Changing a representation breaks its sentinels
 
 When you replace a type, hunt its sentinel values before anything else.
 
@@ -171,7 +206,7 @@ When you replace a type, hunt its sentinel values before anything else.
 - A stringly-typed column becomes an enum, so **enumerate every value ever written to it first**, across the whole tree. Miss one and a CHECK constraint turns a rare path into a hard failure -- and the one you miss is always the rare path, which is why nobody remembered it.
 - An empty collection reaching a query builder can emit valid SQL on one backend and a syntax error on another.
 
-## 10. Respect the invariants
+## 17. Respect the invariants
 
 Some duplication is load-bearing. Before moving or merging anything, find out what enforces the project's rules:
 
@@ -183,7 +218,7 @@ Tests that parse the source, assert on paths, or check that a module never reach
 
 The same goes for framework rules that key on names - durable-workflow engines, task queues, migration tools and plugin registries often resume or dedup on a function or job name. Moving a function between modules is safe; renaming it is not. State the rule once and keep every such name byte-identical through the pass.
 
-## 11. Write the plan as phases that each leave the tests green
+## 18. Write the plan as phases that each leave the tests green
 
 A cleanup that lands as one commit will not be reviewed. Order the phases so the mechanical ones come first:
 
@@ -199,7 +234,7 @@ Say what each phase costs and what could go wrong. Then add a **Considered and n
 - Replacing a hand-written UI widget with a library when the widget enforces app-specific constraints or keyboard behavior. The adapter and the retained accessible controls eat most of the savings, and a build step and payload are added.
 - Collapsing thin wrapper pairs that exist as test seams, for example a durable entry point around a plain body. That section is what stops the reader from re-raising the same ideas, and it stops you from quietly dropping something inconvenient.
 
-## 12. Have it attacked before you build it
+## 19. Have it attacked before you build it
 
 A cleanup plan is a design document and deserves the same treatment. Run adversarial review on separate axes, in parallel, each with a narrow brief:
 
@@ -217,7 +252,7 @@ Expect reviewers to disagree with each other, and treat that as signal rather th
 
 And do not assert a negative you have not checked. Writing "I read these three files and they were fine" is padding unless you read them; when someone does read them, the claim usually turns out to be false, and it costs the whole document its credibility.
 
-## 13. Running a large pass with worker agents
+## 20. Running a large pass with worker agents
 
 Past roughly 20k lines, survey and edit through parallel workers, and keep verification and commits in the parent.
 
@@ -254,8 +289,33 @@ Past roughly 20k lines, survey and edit through parallel workers, and keep verif
 
 To report a delta, split `git diff --numstat master HEAD` by package, and within each package into code, tests (paths under `tests/`) and other files. Show added, removed and net for each. Say which commits the comparison covers.
 
+## Review questions
+
+Ask these while scanning:
+
+- Is this abstraction carrying real policy, or only indirection?
+- Are there two ways to do the same thing?
+- Can this special case fold into the default path?
+- Would deleting this code make the system easier to explain?
+- Is this state owned in one place?
+- Does this helper preserve an old design the current product no longer needs?
+- Is this API built for a hypothetical future instead of present usage?
+- Is this return type weaker than the actual shape warrants?
+- Is this loop making N external calls where one call and a membership check would do?
+
 ## Output
 
-If the user asked for a plan, write the plan. If they asked for the work, do the work.
+If the user asked for a review or a plan, write it. If they asked for the work, do the work.
 
-For a plan, every finding gets: what is too complex, why it is that way today, the simpler shape, the migration cost, and file references. Rank by impact. Keep the prose plain - a refactor spec is read by someone deciding whether to spend a week, and ornament costs them time.
+For a review or plan:
+
+- Findings first, ranked by impact. Simplification opportunities, not style nits. Separate quick wins from structural changes, and call out deletions explicitly.
+- Every finding gets: what is too complex, why it is that way today, the simpler shape, the migration cost and risk, and file references.
+- End with the **Considered and not doing** section (section 18): one line on what was seen and one on why it was excluded. Nothing noticed is silently dropped.
+- Keep the prose plain. A refactor spec is read by someone deciding whether to spend a week, and ornament costs them time.
+
+When a review turns into implementation, turn the highest-value findings into the phased plan of section 18.
+
+A survey prompt for a worker, to adapt:
+
+> Review <area> for opportunities to simplify it, both local (simpler functions, stub functions with no policy, state and behavior that belong in one object) and structural (API surface, special cases that fold into a general mechanism, gadgets, obsolete extension points, duplicated pathways, speculative abstractions, split ownership, compatibility layers, dead or unused code). Read the project's docs first; they record which redundancies are deliberate. For each finding give what is too complex, the simpler shape, why it is safe, the estimated net lines for code and tests, the file references, and the migration risk. Mark findings that change observable behavior. Do not edit files.
