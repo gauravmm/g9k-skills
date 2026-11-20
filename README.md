@@ -13,7 +13,7 @@ This repository currently includes:
 - `python-project-scaffold`, a skill for imposing one shape on a Python project: uv, ruff, pyright in strict mode, pre-commit, GitHub CI, one self-check, and a CLAUDE.md that governs docs and comments.
 - `typst-project-scaffold`, a skill for imposing one shape on a Typst project: a Makefile, typstyle, cspell, vendored fonts, and GitHub CI that builds the PDF and attaches it to tagged releases.
 - `typography`, a skill for setting type: scales, measure, leading, pairing, variable fonts, and font loading, with references for patterns, failure modes, and validations. From [`omer-metin/skills-for-antigravity`](https://github.com/omer-metin/skills-for-antigravity/tree/main/skills/typography), included here under its Apache 2.0 license, unchanged apart from an attribution line.
-- `md2paper`, a skill for sending markdown to a Viwoods AiPaper e-ink tablet as a PDF set for its screen, bundling the `md2paper` script it documents.
+- [`md2paper`](skills/md2paper/SKILL.md) explains how to send Markdown and PDFs to Gaurav's Viwoods AiPaper through COS.
 
 ## Install
 
